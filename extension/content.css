@@ -24,6 +24,18 @@
   background: #1f2937;
 }
 
+.gdb-btn-primary {
+  background: #f97316;
+  border-color: #fdba74;
+  color: #ffffff;
+  font-weight: 700;
+  box-shadow: 0 8px 18px rgba(249, 115, 22, 0.35);
+}
+
+.gdb-btn-primary:hover {
+  background: #ea580c;
+}
+
 #gemini-dev-bridge-toast {
   position: fixed;
   right: 16px;
@@ -36,4 +48,35 @@
   max-width: 320px;
   z-index: 10000;
   line-height: 1.4;
+}
+
+.gdb-inline-apply {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0;
+  padding: 8px 12px;
+  border-radius: 10px;
+  border: 2px solid #f59e0b;
+  background: #fff7ed;
+  font-size: 12px;
+  font-weight: 600;
+  color: #7c2d12;
+  box-shadow: 0 6px 16px rgba(245, 158, 11, 0.2);
+}
+
+.gdb-inline-apply button {
+  border: none;
+  border-radius: 999px;
+  padding: 8px 14px;
+  background: #f97316;
+  color: #fff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 700;
+  box-shadow: 0 6px 16px rgba(249, 115, 22, 0.35);
+}
+
+.gdb-inline-apply button:hover {
+  background: #ea580c;
 }

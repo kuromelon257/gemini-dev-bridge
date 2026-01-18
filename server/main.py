@@ -10,6 +10,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
+import re
 
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -164,6 +165,10 @@ def _snapshot_text(scope_path: Path) -> SnapshotResult:
     truncated_total = False
 
     header_lines = [
+        "----",
+        "### 変更内容（ここに要望を書く）",
+        "- ",
+        "----",
         "### Gemini Snapshot",
         f"Generated: {time.strftime('%Y-%m-%d %H:%M:%S')}",
         f"Root: {ROOT_DIR}",
@@ -251,6 +256,37 @@ def _snapshot_text(scope_path: Path) -> SnapshotResult:
     if truncated_total:
         chunks.append("[INFO] 合計サイズ上限に達したため、以降のファイルは省略しました。")
 
+    # Geminiに貼り付ける際に使うdiff指示テンプレを末尾に付与
+    chunks.append(
+        "\n".join(
+            [
+                "### diff生成ルール（テンプレ）",
+                "- 変更は起動時カレントディレクトリ配下のみ",
+                "- 形式は unified diff",
+                "- `diff --git a/<相対パス> b/<相対パス>` を必ず含める",
+                "- diffは必ずコードブロックで囲む（```diff 〜 ```）",
+                "- コードブロック内で ``` を書く必要がある場合は ```` を使う",
+                "- diff以外の説明は書いてよい（diffはコードブロック内に限定）",
+                "- hunk内の全行は必ず `+` / `-` / 半角スペース / `\\` で始める（空行でも半角スペースを付ける）",
+                "- 空行は削除しない（空行もdiffの一部として保持する）",
+                "- diffコードブロック以外に `diff --git` を含む文字列を出力しない",
+                "- diffコードブロック以外に `---` / `+++` / `@@` を出力しない",
+                "----",
+                "以下のルールで unified diff を出力してください。",
+                "- 変更は起動時カレントディレクトリ配下のみ",
+                "- 形式は unified diff",
+                "- `diff --git a/<相対パス> b/<相対パス>` を必ず含める",
+                "- diffは必ずコードブロックで囲む（```diff 〜 ```）",
+                "- コードブロック内で ``` を書く必要がある場合は ```` を使う",
+                "- diff以外の説明は書いてよい（diffはコードブロック内に限定）",
+                "- hunk内の全行は必ず `+` / `-` / 半角スペース / `\\` で始める（空行でも半角スペースを付ける）",
+                "- 空行は削除しない（空行もdiffの一部として保持する）",
+                "- diffコードブロック以外に `diff --git` を含む文字列を出力しない",
+                "- diffコードブロック以外に `---` / `+++` / `@@` を出力しない",
+            ]
+        )
+    )
+
     meta = {
         "root": str(ROOT_DIR),
         "scope": str(scope_path),
@@ -280,6 +316,93 @@ def _extract_diff_paths(diff_text: str) -> Set[str]:
             raw = raw.removeprefix("a/").removeprefix("b/")
             paths.add(raw)
     return {p for p in paths if p}
+
+
+def _sanitize_diff_text(diff_text: str) -> str:
+    # hunk内の空行やプレフィックス不足を補正し、行数カウントも再計算する
+    lines = diff_text.splitlines()
+    sanitized: List[str] = []
+    in_patch = False
+    in_hunk = False
+    pending_hunk_lines: List[str] = []
+    hunk_old_start = 1
+    hunk_new_start = 1
+    meta_prefixes = (
+        "new file mode ",
+        "deleted file mode ",
+        "similarity index ",
+        "rename from ",
+        "rename to ",
+        "old mode ",
+        "new mode ",
+        "GIT binary patch",
+        "Binary files ",
+        "copy from ",
+        "copy to ",
+    )
+
+    def parse_hunk_header(line: str) -> Tuple[int, int]:
+        match = re.match(r"^@@ -(\d+)(?:,(\d+))? \\+(\\d+)(?:,(\\d+))? @@", line)
+        if not match:
+            return 1, 1
+        return int(match.group(1)), int(match.group(3))
+
+    def flush_hunk() -> None:
+        nonlocal pending_hunk_lines
+        if not pending_hunk_lines:
+            return
+        old_count = sum(1 for l in pending_hunk_lines if l[0] in {" ", "-"})
+        new_count = sum(1 for l in pending_hunk_lines if l[0] in {" ", "+"})
+        sanitized.append(f"@@ -{hunk_old_start},{old_count} +{hunk_new_start},{new_count} @@")
+        sanitized.extend(pending_hunk_lines)
+        pending_hunk_lines = []
+
+    for raw_line in lines:
+        line = raw_line.lstrip("\ufeff")
+        if line.startswith("diff --git "):
+            if in_hunk:
+                flush_hunk()
+            in_patch = True
+            in_hunk = False
+            sanitized.append(line)
+            continue
+        if not in_patch:
+            continue
+        if line.startswith("@@ "):
+            if in_hunk:
+                flush_hunk()
+            in_hunk = True
+            hunk_old_start, hunk_new_start = parse_hunk_header(line)
+            continue
+        if line.startswith("+++ ") or line.startswith("--- ") or line.startswith("index "):
+            if in_hunk:
+                flush_hunk()
+                in_hunk = False
+            sanitized.append(line)
+            continue
+        if line.startswith(meta_prefixes):
+            if in_hunk:
+                flush_hunk()
+                in_hunk = False
+            sanitized.append(line)
+            continue
+        if in_hunk:
+            if line == "":
+                pending_hunk_lines.append(" ")
+                continue
+            if not line.startswith(("+", "-", " ", "\\")):
+                pending_hunk_lines.append(" " + line)
+                continue
+            pending_hunk_lines.append(line)
+            continue
+        # hunk外の不明行はスキップ（説明文混入を防ぐ）
+        continue
+
+    if in_hunk:
+        flush_hunk()
+
+    # git apply は末尾改行が無いと壊れたパッチ扱いになることがあるため付与
+    return "\n".join(sanitized) + "\n"
 
 
 def _validate_diff_paths(paths: Iterable[str]) -> None:
@@ -324,7 +447,8 @@ def apply_diff(request: ApplyRequest):
     if not request.diff_text.strip():
         raise HTTPException(status_code=400, detail="diff_textが空です。")
 
-    diff_paths = _extract_diff_paths(request.diff_text)
+    sanitized_diff = _sanitize_diff_text(request.diff_text)
+    diff_paths = _extract_diff_paths(sanitized_diff)
     if not diff_paths:
         raise HTTPException(status_code=400, detail="diff内のパスが検出できませんでした。")
 
@@ -337,26 +461,49 @@ def apply_diff(request: ApplyRequest):
             detail=f"git diffの取得に失敗しました: {diff_before_err.strip()}",
         )
 
-    check_code, check_out, check_err = _run_git(["apply", "--check", "-"], request.diff_text)
-    if check_code != 0:
+    # まずは通常のチェック。失敗したら3-wayやunidiff-zeroを試す。
+    check_args_list = [
+        ["apply", "--check", "--recount", "-"],
+        ["apply", "--check", "--recount", "--3way", "-"],
+        ["apply", "--check", "--recount", "--unidiff-zero", "-"],
+    ]
+    check_result = None
+    for args in check_args_list:
+        code, out, err = _run_git(args, sanitized_diff)
+        if code == 0:
+            check_result = (args, out, err)
+            break
+    if check_result is None:
         return JSONResponse(
             status_code=400,
             content={
                 "ok": False,
-                "message": f"git apply --check に失敗しました: {check_err.strip() or check_out.strip()}",
+                "message": f"git apply --check に失敗しました: {err.strip() or out.strip()}",
                 "changed_files": [],
                 "diff_before": diff_before,
                 "diff_after": diff_before,
             },
         )
 
-    apply_code, apply_out, apply_err = _run_git(["apply", "-"], request.diff_text)
-    if apply_code != 0:
+    apply_args_list = [
+        ["apply", "--recount", "-"],
+        ["apply", "--recount", "--3way", "-"],
+        ["apply", "--recount", "--unidiff-zero", "-"],
+    ]
+    apply_ok = False
+    apply_err_msg = ""
+    for args in apply_args_list:
+        apply_code, apply_out, apply_err = _run_git(args, sanitized_diff)
+        if apply_code == 0:
+            apply_ok = True
+            break
+        apply_err_msg = apply_err.strip() or apply_out.strip()
+    if not apply_ok:
         return JSONResponse(
             status_code=500,
             content={
                 "ok": False,
-                "message": f"git apply に失敗しました: {apply_err.strip() or apply_out.strip()}",
+                "message": f"git apply に失敗しました: {apply_err_msg}",
                 "changed_files": [],
                 "diff_before": diff_before,
                 "diff_after": diff_before,

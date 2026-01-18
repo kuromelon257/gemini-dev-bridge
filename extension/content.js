@@ -30,9 +30,18 @@ function isVisible(el) {
 
 function findGeminiInput() {
   // GeminiのUI変更に耐えるため、textarea/contenteditableを広めに探索
+  const quillEditors = Array.from(
+    document.querySelectorAll(
+      "rich-textarea .ql-editor[contenteditable='true'], .ql-editor[contenteditable='true']"
+    )
+  ).filter(isVisible);
+  if (quillEditors.length > 0) {
+    return quillEditors[quillEditors.length - 1];
+  }
+
   const candidates = Array.from(
     document.querySelectorAll("textarea, div[contenteditable='true']")
-  ).filter(isVisible);
+  ).filter((el) => isVisible(el) && !el.classList.contains("ql-clipboard"));
   if (candidates.length === 0) {
     return null;
   }
@@ -45,11 +54,23 @@ function setInputText(inputEl, text) {
   }
   if (inputEl.tagName.toLowerCase() === "textarea") {
     inputEl.value = text;
+    inputEl.focus();
+    inputEl.selectionStart = inputEl.value.length;
+    inputEl.selectionEnd = inputEl.value.length;
     inputEl.dispatchEvent(new Event("input", { bubbles: true }));
     return true;
   }
   if (inputEl.isContentEditable) {
     inputEl.textContent = text;
+    inputEl.focus();
+    const range = document.createRange();
+    range.selectNodeContents(inputEl);
+    range.collapse(false);
+    const selection = window.getSelection();
+    if (selection) {
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
     inputEl.dispatchEvent(new Event("input", { bubbles: true }));
     return true;
   }
@@ -82,6 +103,14 @@ function extractUnifiedDiff() {
   }
 
   return null;
+}
+
+function looksLikeDiff(text) {
+  return (
+    text.includes("diff --git") ||
+    (text.includes("--- ") && text.includes("+++ ")) ||
+    text.startsWith("@@ ")
+  );
 }
 
 async function fetchSnapshot() {
@@ -123,6 +152,56 @@ async function applyDiff(diffText) {
   return data;
 }
 
+function attachApplyButtons() {
+  const codeBlocks = Array.from(document.querySelectorAll("pre code"));
+  codeBlocks.forEach((code) => {
+    if (code.dataset.gdbApplyAttached === "1") {
+      return;
+    }
+    const text = (code.textContent || "").trim();
+    if (!text || !looksLikeDiff(text)) {
+      return;
+    }
+
+    const pre = code.closest("pre");
+    if (!pre) {
+      return;
+    }
+
+    const container = document.createElement("div");
+    container.className = "gdb-inline-apply";
+
+    const label = document.createElement("span");
+    label.textContent = "差分を検出しました";
+
+    const button = document.createElement("button");
+    button.type = "button";
+    button.textContent = "この差分を適用";
+    button.addEventListener("click", async () => {
+      showToast("diff適用中...");
+      try {
+        const result = await applyDiff(text);
+        const files = (result.changed_files || []).join(", ");
+        showToast(`適用しました。変更: ${files || "(なし)"}`);
+      } catch (err) {
+        showToast(err.message || "diff適用に失敗しました。");
+      }
+    });
+
+    container.appendChild(label);
+    container.appendChild(button);
+
+    pre.parentElement.insertBefore(container, pre);
+    code.dataset.gdbApplyAttached = "1";
+  });
+}
+
+function observeDiffBlocks() {
+  attachApplyButtons();
+  const observer = new MutationObserver(() => attachApplyButtons());
+  observer.observe(document.body, { childList: true, subtree: true });
+}
+
 function createFloatingButtons() {
   if (document.getElementById("gemini-dev-bridge")) {
     return;
@@ -132,8 +211,8 @@ function createFloatingButtons() {
   container.id = "gemini-dev-bridge";
 
   const snapshotBtn = document.createElement("button");
-  snapshotBtn.className = "gdb-btn";
-  snapshotBtn.textContent = "Snapshot → Paste";
+  snapshotBtn.className = "gdb-btn gdb-btn-primary";
+  snapshotBtn.textContent = "スナップショット貼り付け";
   snapshotBtn.addEventListener("click", async () => {
     showToast("スナップショット取得中...");
     try {
@@ -151,7 +230,7 @@ function createFloatingButtons() {
 
   const applyBtn = document.createElement("button");
   applyBtn.className = "gdb-btn";
-  applyBtn.textContent = "Extract Diff → Apply";
+  applyBtn.textContent = "差分を抽出して適用";
   applyBtn.addEventListener("click", async () => {
     showToast("diff抽出中...");
     const diffText = extractUnifiedDiff();
@@ -174,3 +253,4 @@ function createFloatingButtons() {
 }
 
 createFloatingButtons();
+observeDiffBlocks();
