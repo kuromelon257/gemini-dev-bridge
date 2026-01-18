@@ -1,0 +1,24 @@
+{
+  "manifest_version": 3,
+  "name": "Gemini Dev Bridge",
+  "version": "1.0.0",
+  "description": "Gemini Web版とローカル開発をつなぐ最小ブリッジ",
+  "permissions": ["storage"],
+  "host_permissions": [
+    "https://gemini.google.com/*",
+    "http://127.0.0.1:*/*",
+    "http://localhost:*/*"
+  ],
+  "content_scripts": [
+    {
+      "matches": ["https://gemini.google.com/*"],
+      "js": ["content.js"],
+      "css": ["content.css"],
+      "run_at": "document_idle"
+    }
+  ],
+  "options_ui": {
+    "page": "options.html",
+    "open_in_tab": true
+  }
+}
