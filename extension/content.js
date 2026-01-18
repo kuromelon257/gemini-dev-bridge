@@ -1,7 +1,6 @@
 const DEFAULTS = {
   serverUrl: "http://127.0.0.1:17831",
   token: "",
-  scope: "src",
 };
 
 function getSettings() {
@@ -89,7 +88,6 @@ async function fetchSnapshot() {
   // トークンを付与してローカルサーバからスナップショットを取得
   const settings = await getSettings();
   const url = new URL("/snapshot", settings.serverUrl);
-  url.searchParams.set("scope", settings.scope || "src");
 
   const res = await fetch(url.toString(), {
     headers: {
@@ -115,7 +113,7 @@ async function applyDiff(diffText) {
       "Content-Type": "application/json",
       "X-Local-Token": settings.token || "",
     },
-    body: JSON.stringify({ diff_text: diffText, scope: settings.scope || "src" }),
+    body: JSON.stringify({ diff_text: diffText }),
   });
 
   const data = await res.json().catch(() => ({ message: "応答の解析に失敗しました。" }));

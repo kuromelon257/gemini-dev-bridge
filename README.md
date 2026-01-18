@@ -13,7 +13,7 @@ Gemini Web版（https://gemini.google.com/）での開発支援を、**ローカ
 ## セキュリティ設計
 - サーバは **127.0.0.1 にのみバインド**（外部公開しない）
 - **トークン必須**（拡張機能からのみ操作できるようにする）
-- **scope配下だけ**を対象に走査・diff適用
+- **起動時カレントディレクトリ配下のみ**を対象に走査・diff適用
 - `.env` や鍵ファイル等は除外（機密保護のため）
 - `git apply --check` を通過したdiffのみ適用
 
@@ -44,13 +44,17 @@ LICENSE
 ### Windows
 
 ```powershell
-./scripts/run_server.ps1
+# 対象プロジェクトのルートで実行します
+cd C:\\path\\to\\your-project
+\\path\\to\\gemini-dev-bridge\\scripts\\run_server.ps1
 ```
 
 ### macOS
 
 ```bash
-./scripts/run_server.sh
+# 対象プロジェクトのルートで実行します
+cd /path/to/your-project
+/path/to/gemini-dev-bridge/scripts/run_server.sh
 ```
 
 3) Chrome拡張を読み込む
@@ -60,7 +64,6 @@ LICENSE
 
 4) 拡張オプションで設定
 - `ローカルサーバURL` と `トークン` を入力
-- `scope` はデフォルト `src`
 
 ## 使い方
 ### 1. Snapshot → Paste
@@ -71,19 +74,19 @@ LICENSE
 下記テンプレをコピペして指示してください。
 
 **diff生成ルール（テンプレ）**
-- 変更は `scope` 配下のみ
+- 変更は **起動時カレントディレクトリ配下のみ**
 - unified diff 形式
-- ファイルパスは相対（例: `src/...`）
-- `diff --git a/src/... b/src/...` を必ず含める
+- ファイルパスは相対（例: `app/main.py`）
+- `diff --git a/<相対パス> b/<相対パス>` を必ず含める
 - 改行は保持（LF/CRLF変更は最小限）
 - 可能な限り小さな差分で
 
 **コピペ用プロンプト**
 ```
 以下のルールで unified diff を出力してください。
-- 変更は scope 配下のみ（例: src/...）
+- 変更は起動時カレントディレクトリ配下のみ
 - 形式は unified diff
-- `diff --git a/src/... b/src/...` を必ず含める
+- `diff --git a/<相対パス> b/<相対パス>` を必ず含める
 - 余計な説明文は不要、diffだけを出力
 ```
 
@@ -99,12 +102,14 @@ LICENSE
 
 ```powershell
 $env:GEMINI_BRIDGE_PORT = 17831
-./scripts/run_server.ps1
+cd C:\\path\\to\\your-project
+\\path\\to\\gemini-dev-bridge\\scripts\\run_server.ps1
 ```
 
 ```bash
 export GEMINI_BRIDGE_PORT=17831
-./scripts/run_server.sh
+cd /path/to/your-project
+/path/to/gemini-dev-bridge/scripts/run_server.sh
 ```
 
 ### トークンエラー
@@ -118,9 +123,33 @@ export GEMINI_BRIDGE_PORT=17831
 
 ### git apply が失敗する
 - diffが **unified diff形式** か確認
-- `diff --git a/src/... b/src/...` を含んでいるか確認
+- `diff --git a/<相対パス> b/<相対パス>` を含んでいるか確認
 - 変更対象ファイルが古いとコンテキスト不一致になります
 - 改行コードのズレ（CRLF/LF）に注意してください
+
+## 便利な起動方法（パスを通す）
+毎回フルパスで呼び出すのが面倒な場合は、`scripts` を PATH に追加してください。
+
+### Windows（PowerShell）
+1) 環境変数PATHに `C:\\path\\to\\gemini-dev-bridge\\scripts` を追加
+2) 対象プロジェクトのルートで次を実行
+
+```powershell
+run_server.ps1
+```
+
+### macOS
+1) `~/.zshrc` などに追加
+
+```bash
+export PATH=\"/path/to/gemini-dev-bridge/scripts:$PATH\"
+```
+
+2) 対象プロジェクトのルートで次を実行
+
+```bash
+run_server.sh
+```
 
 ## 開発者向け
 ### 主要ファイル

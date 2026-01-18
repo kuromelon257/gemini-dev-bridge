@@ -121,7 +121,6 @@ app.add_middleware(
 
 class ApplyRequest(BaseModel):
     diff_text: str
-    scope: Optional[str] = "src"
 
 
 @dataclass
@@ -144,20 +143,6 @@ def _is_relative_safe_path(path_str: str) -> bool:
     return True
 
 
-def _validate_scope(scope: str) -> Path:
-    if not scope:
-        scope = "src"
-    if not _is_relative_safe_path(scope):
-        raise HTTPException(status_code=400, detail="scopeが不正です。")
-    target = (ROOT_DIR / scope).resolve()
-    if not target.is_relative_to(ROOT_DIR):
-        raise HTTPException(status_code=400, detail="scopeが不正です。")
-    # scopeが存在しない場合は、誤設定として扱う
-    if not target.exists() or not target.is_dir():
-        raise HTTPException(status_code=404, detail="scopeディレクトリが見つかりません。")
-    return target
-
-
 def _is_excluded_file(path: Path) -> bool:
     if path.name in EXCLUDE_FILE_NAMES:
         return True
@@ -170,7 +155,7 @@ def _detect_language(path: Path) -> str:
     return LANG_BY_SUFFIX.get(path.suffix.lower(), "")
 
 
-def _snapshot_text(scope_path: Path, scope_value: str) -> SnapshotResult:
+def _snapshot_text(scope_path: Path) -> SnapshotResult:
     total_bytes = 0
     file_count = 0
     skipped_files: List[str] = []
@@ -268,7 +253,7 @@ def _snapshot_text(scope_path: Path, scope_value: str) -> SnapshotResult:
 
     meta = {
         "root": str(ROOT_DIR),
-        "scope": scope_value,
+        "scope": str(scope_path),
         "file_count": file_count,
         "total_bytes": total_bytes,
         "skipped_files": skipped_files,
@@ -297,26 +282,19 @@ def _extract_diff_paths(diff_text: str) -> Set[str]:
     return {p for p in paths if p}
 
 
-def _validate_diff_paths(paths: Iterable[str], scope_value: str) -> None:
-    scope_parts = PurePosixPath(scope_value).parts
+def _validate_diff_paths(paths: Iterable[str]) -> None:
     for path_str in paths:
         if path_str == "/dev/null":
             continue
         if not _is_relative_safe_path(path_str):
             raise HTTPException(status_code=400, detail="diff内のパスが不正です。")
         posix = PurePosixPath(path_str)
-        # diffの対象がscope配下以外なら拒否
-        if scope_parts and posix.parts[: len(scope_parts)] != scope_parts:
-            raise HTTPException(
-                status_code=400,
-                detail="diffの対象がscope外に含まれています。",
-            )
+        # diffの対象がプロジェクトルート外に出ないことを保証
         resolved = (ROOT_DIR / Path(*posix.parts)).resolve()
-        scope_root = (ROOT_DIR / scope_value).resolve()
-        if not resolved.is_relative_to(scope_root):
+        if not resolved.is_relative_to(ROOT_DIR):
             raise HTTPException(
                 status_code=400,
-                detail="diffの対象がscope外に含まれています。",
+                detail="diffの対象がプロジェクトルート外に含まれています。",
             )
 
 
@@ -335,9 +313,9 @@ def _run_git(args: List[str], input_text: Optional[str] = None) -> Tuple[int, st
 
 
 @app.get("/snapshot")
-def snapshot(scope: str = "src"):
-    scope_path = _validate_scope(scope)
-    result = _snapshot_text(scope_path, scope)
+def snapshot():
+    # 起動時のCWD配下のみを対象にする
+    result = _snapshot_text(ROOT_DIR)
     return JSONResponse(content={"text": result.text, "meta": result.meta})
 
 
@@ -346,14 +324,11 @@ def apply_diff(request: ApplyRequest):
     if not request.diff_text.strip():
         raise HTTPException(status_code=400, detail="diff_textが空です。")
 
-    scope_value = request.scope or "src"
-    _validate_scope(scope_value)
-
     diff_paths = _extract_diff_paths(request.diff_text)
     if not diff_paths:
         raise HTTPException(status_code=400, detail="diff内のパスが検出できませんでした。")
 
-    _validate_diff_paths(diff_paths, scope_value)
+    _validate_diff_paths(diff_paths)
 
     before_code, diff_before, diff_before_err = _run_git(["diff"])
     if before_code != 0:
@@ -455,8 +430,9 @@ def main() -> None:
     print("=" * 60)
     sys.stdout.flush()
 
+    # 直接appオブジェクトを渡すことで、import経由の失敗を避ける
     uvicorn.run(
-        "server.main:app",
+        app,
         host="127.0.0.1",
         port=port,
         log_level="info",
