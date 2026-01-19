@@ -28,6 +28,7 @@ Gemini Web版（https://gemini.google.com/）での開発支援を、**ローカ
 /extension  : Chrome拡張機能
 /server     : Python FastAPI ローカルサーバ
 /scripts    : 起動補助（PowerShell / bat）
+/bookmarklet: ブックマークレット（拡張機能不可の場合）
 Dockerfile
 docker-compose.yml
 .env.example
@@ -60,7 +61,7 @@ docker compose up --build
 
 起動ログに `Token:` が出るので控えておきます。URLは `http://127.0.0.1:17831` です。
 
-5) Chrome拡張を読み込む
+5) Chrome拡張を読み込む（会社PCで制限がある場合は後述のブックマークレットを使用）
 - Chrome → 拡張機能 → デベロッパーモード ON
 - 「パッケージ化されていない拡張機能を読み込む」
 - `extension` フォルダを指定
@@ -115,6 +116,20 @@ docker compose up --build
 - Geminiの返信で **diffコードブロック** が出力されている状態で
 - **Extract Diff → Apply** を押す
 - 成功時は変更ファイル一覧がトースト表示されます
+
+## ブックマークレット版（拡張機能が使えない場合）
+会社PCなどで拡張機能が制限されている場合は、ブックマークレットを使えます。
+
+### セットアップ
+1) ブックマークを新規作成
+2) 名前は `Gemini Dev Bridge` などにする
+3) URL に `bookmarklet/bookmarklet.txt` の中身をそのまま貼り付ける
+
+### 使い方
+- Geminiページを開いた状態でブックマークをクリック
+- 右下に3ボタン（スナップショット貼り付け / 差分適用 / 設定）が出ます
+- 初回は `設定` からサーバURLとトークンを入力
+  - 以降はブラウザの `localStorage` に保存されます
 
 ## トラブルシュート
 ### ポートが埋まっている
