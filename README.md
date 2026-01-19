@@ -8,24 +8,19 @@ Gemini Web版（https://gemini.google.com/）での開発支援を、**ローカ
 ## これは何か（目的）
 - **外部アップロードなし**で、Gemini Web版にローカルのスナップショットを渡す
 - **unified diffのみ**を安全に適用し、任意コード実行をしない
-- Windows上で、`PowerShell` 1コマンド起動が可能
+- Dockerで1コマンド起動が可能
 
 ## セキュリティ設計
-- サーバは **127.0.0.1 にのみバインド**（外部公開しない）
+- サーバは **ホスト側では127.0.0.1に限定**して公開（外部公開しない）
+- Dockerコンテナ内は `0.0.0.0` で待ち受け、ホスト側からのみアクセス可能
 - **トークン必須**（拡張機能からのみ操作できるようにする）
 - **起動時カレントディレクトリ配下のみ**を対象に走査・diff適用
 - `.env` や鍵ファイル等は除外（機密保護のため）
 - `git apply --check` を通過したdiffのみ適用
 
 ## 必要要件
-### Windows
-- Git for Windows
-- Python 3.11+ 推奨
-- Google Chrome
-
-### macOS
-- Git
-- Python 3.11+ 推奨（`python3` が使える状態）
+- Docker Desktop
+- Git（ホストにあるだけでOK。コンテナ内には同梱済み）
 - Google Chrome
 
 ## リポジトリ構成
@@ -33,36 +28,44 @@ Gemini Web版（https://gemini.google.com/）での開発支援を、**ローカ
 /extension  : Chrome拡張機能
 /server     : Python FastAPI ローカルサーバ
 /scripts    : 起動補助（PowerShell / bat）
+Dockerfile
+docker-compose.yml
+.env.example
 README.md
 LICENSE
 ```
 
-## インストール手順
+## インストール手順（Docker前提）
 1) リポジトリを clone
-2) サーバ起動
-
-### Windows
-
-```powershell
-# 対象プロジェクトのルートで実行します
-cd C:\\path\\to\\your-project
-\\path\\to\\gemini-dev-bridge\\scripts\\run_server.ps1
-```
-
-### macOS
+2) `.env` を用意（パスだけ指定）
 
 ```bash
-# 対象プロジェクトのルートで実行します
-cd /path/to/your-project
-/path/to/gemini-dev-bridge/scripts/run_server.sh
+cp .env.example .env
 ```
 
-3) Chrome拡張を読み込む
+`.env` を開いて `TARGET_PROJECT` に対象プロジェクトの絶対パスを設定してください。  
+Docker Desktop の「File Sharing」にそのパスが含まれていないと起動できません。
+
+3) Dockerイメージをビルド
+
+```bash
+docker build -t gemini-dev-bridge .
+```
+
+4) サーバ起動（対象プロジェクトを自動でマウント）
+
+```bash
+docker compose up --build
+```
+
+起動ログに `Token:` が出るので控えておきます。URLは `http://127.0.0.1:17831` です。
+
+5) Chrome拡張を読み込む
 - Chrome → 拡張機能 → デベロッパーモード ON
 - 「パッケージ化されていない拡張機能を読み込む」
 - `extension` フォルダを指定
 
-4) 拡張オプションで設定
+6) 拡張オプションで設定
 - `ローカルサーバURL` と `トークン` を入力
 
 ## 使い方
@@ -78,11 +81,13 @@ cd /path/to/your-project
 - unified diff 形式
 - ファイルパスは相対（例: `app/main.py`）
 - `diff --git a/<相対パス> b/<相対パス>` を必ず含める
+- 各ファイルの先頭に必ず `diff --git ...` 行を付ける（無いdiffは不可）
 - diffは必ずコードブロックで囲む（```diff 〜 ```）
 - コードブロック内で ``` を書く必要がある場合は ```` を使う
 - diff以外の説明は書いてよい（diffはコードブロック内に限定）
 - hunk内の全行は必ず `+` / `-` / 半角スペース / `\` で始める（空行でも半角スペースを付ける）
 - 空行は削除しない（空行もdiffの一部として保持する）
+- 行末の空白は入れない（trailing whitespaceを禁止）
 - diffコードブロック以外に `diff --git` を含む文字列を出力しない
 - diffコードブロック以外に `---` / `+++` / `@@` を出力しない
 - 改行は保持（LF/CRLF変更は最小限）
@@ -94,11 +99,13 @@ cd /path/to/your-project
 - 変更は起動時カレントディレクトリ配下のみ
 - 形式は unified diff
 - `diff --git a/<相対パス> b/<相対パス>` を必ず含める
+- 各ファイルの先頭に必ず `diff --git ...` 行を付ける（無いdiffは不可）
 - diffは必ずコードブロックで囲む（```diff 〜 ```）
 - コードブロック内で ``` を書く必要がある場合は ```` を使う
 - diff以外の説明は書いてよい（diffはコードブロック内に限定）
 - hunk内の全行は必ず `+` / `-` / 半角スペース / `\` で始める（空行でも半角スペースを付ける）
 - 空行は削除しない（空行もdiffの一部として保持する）
+- 行末の空白は入れない（trailing whitespaceを禁止）
 - diffコードブロック以外に `diff --git` を含む文字列を出力しない
 - diffコードブロック以外に `---` / `+++` / `@@` を出力しない
 - 余計な説明文は不要、diffだけを出力
@@ -116,15 +123,17 @@ cd /path/to/your-project
 
 ```powershell
 $env:GEMINI_BRIDGE_PORT = 17831
-cd C:\\path\\to\\your-project
-\\path\\to\\gemini-dev-bridge\\scripts\\run_server.ps1
+docker compose up --build
 ```
 
 ```bash
 export GEMINI_BRIDGE_PORT=17831
-cd /path/to/your-project
-/path/to/gemini-dev-bridge/scripts/run_server.sh
+docker compose up --build
 ```
+
+### Dockerの共有パスエラー
+- `mounts denied` が出る場合、Docker Desktop の「File Sharing」で対象パスを許可してください
+- `.env` の `TARGET_PROJECT` が実在するかも確認してください
 
 ### トークンエラー
 - サーバ起動ログの `Token:` を拡張機能のオプションに入力してください
@@ -141,28 +150,30 @@ cd /path/to/your-project
 - 変更対象ファイルが古いとコンテキスト不一致になります
 - 改行コードのズレ（CRLF/LF）に注意してください
 
-## 便利な起動方法（パスを通す）
-毎回フルパスで呼び出すのが面倒な場合は、`scripts` を PATH に追加してください。
+## 便利な起動方法（docker run）
+`docker compose` を使わずに起動したい場合は以下を使います。
+この場合のみ `/workspace` のパスが登場しますが、**コンテナ内の作業ディレクトリ名**なのでホスト側に存在する必要はありません。
 
-### Windows（PowerShell）
-1) 環境変数PATHに `C:\\path\\to\\gemini-dev-bridge\\scripts` を追加
-2) 対象プロジェクトのルートで次を実行
+### macOS / Linux
+```bash
+docker run --rm \
+  -e GEMINI_BRIDGE_HOST=0.0.0.0 \
+  -e GEMINI_BRIDGE_PORT=17831 \
+  -p 127.0.0.1:17831:17831 \
+  -v /path/to/your-project:/workspace \
+  -w /workspace \
+  gemini-dev-bridge
+```
 
+### Windows (PowerShell)
 ```powershell
-run_server.ps1
-```
-
-### macOS
-1) `~/.zshrc` などに追加
-
-```bash
-export PATH=\"/path/to/gemini-dev-bridge/scripts:$PATH\"
-```
-
-2) 対象プロジェクトのルートで次を実行
-
-```bash
-run_server.sh
+docker run --rm `
+  -e GEMINI_BRIDGE_HOST=0.0.0.0 `
+  -e GEMINI_BRIDGE_PORT=17831 `
+  -p 127.0.0.1:17831:17831 `
+  -v C:\path\to\your-project:/workspace `
+  -w /workspace `
+  gemini-dev-bridge
 ```
 
 ## 開発者向け

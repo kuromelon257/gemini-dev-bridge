@@ -1,0 +1,11 @@
+services:
+  gemini-dev-bridge:
+    build: .
+    environment:
+      GEMINI_BRIDGE_HOST: 0.0.0.0
+      GEMINI_BRIDGE_PORT: ${GEMINI_BRIDGE_PORT:-17831}
+    ports:
+      - "127.0.0.1:${GEMINI_BRIDGE_PORT:-17831}:${GEMINI_BRIDGE_PORT:-17831}"
+    volumes:
+      - ${TARGET_PROJECT:?set TARGET_PROJECT}:/workspace
+    working_dir: /workspace

@@ -7,6 +7,7 @@ import socket
 import subprocess
 import sys
 import time
+import ipaddress
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Set, Tuple
@@ -93,7 +94,16 @@ app = FastAPI()
 async def local_token_guard(request: Request, call_next):
     # ローカル以外の通信は明確に拒否する
     client_host = request.client.host if request.client else ""
-    if client_host not in {"127.0.0.1", "::1"}:
+    allowed_hosts = {"127.0.0.1", "::1"}
+    # Docker経由などでホスト側から来る場合は、プライベートIP帯を許容（トークンで保護）
+    if _load_host() == "0.0.0.0":
+        try:
+            ip = ipaddress.ip_address(client_host)
+            if ip.is_private:
+                allowed_hosts.add(client_host)
+        except ValueError:
+            pass
+    if client_host not in allowed_hosts:
         return JSONResponse(
             status_code=403,
             content={"ok": False, "message": "ローカルホスト以外からのアクセスは拒否されました。"},
@@ -264,11 +274,13 @@ def _snapshot_text(scope_path: Path) -> SnapshotResult:
                 "- 変更は起動時カレントディレクトリ配下のみ",
                 "- 形式は unified diff",
                 "- `diff --git a/<相対パス> b/<相対パス>` を必ず含める",
+                "- 各ファイルの先頭に必ず `diff --git ...` 行を付ける（無いdiffは不可）",
                 "- diffは必ずコードブロックで囲む（```diff 〜 ```）",
                 "- コードブロック内で ``` を書く必要がある場合は ```` を使う",
                 "- diff以外の説明は書いてよい（diffはコードブロック内に限定）",
                 "- hunk内の全行は必ず `+` / `-` / 半角スペース / `\\` で始める（空行でも半角スペースを付ける）",
                 "- 空行は削除しない（空行もdiffの一部として保持する）",
+                "- 行末の空白は入れない（trailing whitespaceを禁止）",
                 "- diffコードブロック以外に `diff --git` を含む文字列を出力しない",
                 "- diffコードブロック以外に `---` / `+++` / `@@` を出力しない",
                 "----",
@@ -276,11 +288,13 @@ def _snapshot_text(scope_path: Path) -> SnapshotResult:
                 "- 変更は起動時カレントディレクトリ配下のみ",
                 "- 形式は unified diff",
                 "- `diff --git a/<相対パス> b/<相対パス>` を必ず含める",
+                "- 各ファイルの先頭に必ず `diff --git ...` 行を付ける（無いdiffは不可）",
                 "- diffは必ずコードブロックで囲む（```diff 〜 ```）",
                 "- コードブロック内で ``` を書く必要がある場合は ```` を使う",
                 "- diff以外の説明は書いてよい（diffはコードブロック内に限定）",
                 "- hunk内の全行は必ず `+` / `-` / 半角スペース / `\\` で始める（空行でも半角スペースを付ける）",
                 "- 空行は削除しない（空行もdiffの一部として保持する）",
+                "- 行末の空白は入れない（trailing whitespaceを禁止）",
                 "- diffコードブロック以外に `diff --git` を含む文字列を出力しない",
                 "- diffコードブロック以外に `---` / `+++` / `@@` を出力しない",
             ]
@@ -357,6 +371,12 @@ def _sanitize_diff_text(diff_text: str) -> str:
         sanitized.extend(pending_hunk_lines)
         pending_hunk_lines = []
 
+    def normalize_hunk_line(raw: str) -> str:
+        trimmed = raw.rstrip()
+        if trimmed == "":
+            return " "
+        return trimmed
+
     for raw_line in lines:
         line = raw_line.lstrip("\ufeff")
         if line.startswith("diff --git "):
@@ -391,9 +411,9 @@ def _sanitize_diff_text(diff_text: str) -> str:
                 pending_hunk_lines.append(" ")
                 continue
             if not line.startswith(("+", "-", " ", "\\")):
-                pending_hunk_lines.append(" " + line)
+                pending_hunk_lines.append(normalize_hunk_line(" " + line))
                 continue
-            pending_hunk_lines.append(line)
+            pending_hunk_lines.append(normalize_hunk_line(line))
             continue
         # hunk外の不明行はスキップ（説明文混入を防ぐ）
         continue
@@ -444,106 +464,132 @@ def snapshot():
 
 @app.post("/apply")
 def apply_diff(request: ApplyRequest):
-    if not request.diff_text.strip():
-        raise HTTPException(status_code=400, detail="diff_textが空です。")
+    try:
+        if not request.diff_text.strip():
+            raise HTTPException(status_code=400, detail="diff_textが空です。")
 
-    sanitized_diff = _sanitize_diff_text(request.diff_text)
-    diff_paths = _extract_diff_paths(sanitized_diff)
-    if not diff_paths:
-        raise HTTPException(status_code=400, detail="diff内のパスが検出できませんでした。")
+        sanitized_diff = _sanitize_diff_text(request.diff_text)
+        diff_paths = _extract_diff_paths(sanitized_diff)
+        if not diff_paths:
+            raise HTTPException(status_code=400, detail="diff内のパスが検出できませんでした。")
 
-    _validate_diff_paths(diff_paths)
+        _validate_diff_paths(diff_paths)
 
-    before_code, diff_before, diff_before_err = _run_git(["diff"])
-    if before_code != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"git diffの取得に失敗しました: {diff_before_err.strip()}",
-        )
+        before_code, diff_before, diff_before_err = _run_git(["diff"])
+        if before_code != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"git diffの取得に失敗しました: {diff_before_err.strip()}",
+            )
 
-    # まずは通常のチェック。失敗したら3-wayやunidiff-zeroを試す。
-    check_args_list = [
-        ["apply", "--check", "--recount", "-"],
-        ["apply", "--check", "--recount", "--3way", "-"],
-        ["apply", "--check", "--recount", "--unidiff-zero", "-"],
-    ]
-    check_result = None
-    for args in check_args_list:
-        code, out, err = _run_git(args, sanitized_diff)
-        if code == 0:
-            check_result = (args, out, err)
-            break
-    if check_result is None:
+        # まずは通常のチェック。失敗したら空白無視や3-way、unidiff-zeroを試す。
+        check_args_list = [
+            ["apply", "--check", "--recount", "--whitespace=nowarn", "-"],
+            ["apply", "--check", "--recount", "--whitespace=nowarn", "--ignore-space-change", "-"],
+            ["apply", "--check", "--recount", "--whitespace=nowarn", "--ignore-whitespace", "-"],
+            ["apply", "--check", "--recount", "--whitespace=nowarn", "--3way", "-"],
+            ["apply", "--check", "--recount", "--whitespace=nowarn", "--unidiff-zero", "-"],
+        ]
+        check_result = None
+        last_check_out = ""
+        last_check_err = ""
+        for args in check_args_list:
+            code, out, err = _run_git(args, sanitized_diff)
+            last_check_out, last_check_err = out, err
+            if code == 0:
+                check_result = (args, out, err)
+                break
+        if check_result is None:
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "ok": False,
+                    "message": (
+                        "git apply --check に失敗しました: "
+                        f"{last_check_err.strip() or last_check_out.strip()}"
+                    ),
+                    "changed_files": [],
+                    "diff_before": diff_before,
+                    "diff_after": diff_before,
+                },
+            )
+
+        apply_args_list = [
+            ["apply", "--recount", "--whitespace=fix", "-"],
+            ["apply", "--recount", "--whitespace=fix", "--ignore-space-change", "-"],
+            ["apply", "--recount", "--whitespace=fix", "--ignore-whitespace", "-"],
+            ["apply", "--recount", "--whitespace=fix", "--3way", "-"],
+            ["apply", "--recount", "--whitespace=fix", "--unidiff-zero", "-"],
+        ]
+        apply_ok = False
+        apply_err_msg = ""
+        apply_mode = ""
+        for args in apply_args_list:
+            apply_code, apply_out, apply_err = _run_git(args, sanitized_diff)
+            if apply_code == 0:
+                apply_ok = True
+                apply_mode = " ".join(args[2:-1]) if len(args) > 3 else "default"
+                break
+            apply_err_msg = apply_err.strip() or apply_out.strip()
+        if not apply_ok:
+            return JSONResponse(
+                status_code=500,
+                content={
+                    "ok": False,
+                    "message": f"git apply に失敗しました: {apply_err_msg}",
+                    "changed_files": [],
+                    "diff_before": diff_before,
+                    "diff_after": diff_before,
+                },
+            )
+
+        after_code, diff_after, diff_after_err = _run_git(["diff"])
+        if after_code != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"git diffの取得に失敗しました: {diff_after_err.strip()}",
+            )
+
+        name_code, name_out, name_err = _run_git(["diff", "--name-only"])
+        if name_code != 0:
+            raise HTTPException(
+                status_code=500,
+                detail=f"git diff --name-only の取得に失敗しました: {name_err.strip()}",
+            )
+
+        changed_files = [line for line in name_out.splitlines() if line.strip()]
+
         return JSONResponse(
-            status_code=400,
+            content={
+                "ok": True,
+                "message": f"diffを適用しました。（適用モード: {apply_mode}）",
+                "changed_files": changed_files,
+                "diff_before": diff_before,
+                "diff_after": diff_after,
+            }
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        return JSONResponse(
+            status_code=500,
             content={
                 "ok": False,
-                "message": f"git apply --check に失敗しました: {err.strip() or out.strip()}",
+                "message": f"サーバ内部エラー: {exc}",
                 "changed_files": [],
-                "diff_before": diff_before,
-                "diff_after": diff_before,
+                "diff_before": "",
+                "diff_after": "",
             },
         )
 
-    apply_args_list = [
-        ["apply", "--recount", "-"],
-        ["apply", "--recount", "--3way", "-"],
-        ["apply", "--recount", "--unidiff-zero", "-"],
-    ]
-    apply_ok = False
-    apply_err_msg = ""
-    for args in apply_args_list:
-        apply_code, apply_out, apply_err = _run_git(args, sanitized_diff)
-        if apply_code == 0:
-            apply_ok = True
-            break
-        apply_err_msg = apply_err.strip() or apply_out.strip()
-    if not apply_ok:
-        return JSONResponse(
-            status_code=500,
-            content={
-                "ok": False,
-                "message": f"git apply に失敗しました: {apply_err_msg}",
-                "changed_files": [],
-                "diff_before": diff_before,
-                "diff_after": diff_before,
-            },
-        )
 
-    after_code, diff_after, diff_after_err = _run_git(["diff"])
-    if after_code != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"git diffの取得に失敗しました: {diff_after_err.strip()}",
-        )
-
-    name_code, name_out, name_err = _run_git(["diff", "--name-only"])
-    if name_code != 0:
-        raise HTTPException(
-            status_code=500,
-            detail=f"git diff --name-only の取得に失敗しました: {name_err.strip()}",
-        )
-
-    changed_files = [line for line in name_out.splitlines() if line.strip()]
-
-    return JSONResponse(
-        content={
-            "ok": True,
-            "message": "diffを適用しました。",
-            "changed_files": changed_files,
-            "diff_before": diff_before,
-            "diff_after": diff_after,
-        }
-    )
-
-
-def _find_free_port(start_port: int, max_tries: int) -> int:
+def _find_free_port(start_port: int, max_tries: int, host: str) -> int:
     for i in range(max_tries + 1):
         port = start_port + i
         with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
-                sock.bind(("127.0.0.1", port))
+                sock.bind((host, port))
                 return port
             except OSError:
                 continue
@@ -560,19 +606,30 @@ def _load_fixed_port() -> Optional[int]:
         return None
 
 
+def _load_host() -> str:
+    raw = os.getenv("GEMINI_BRIDGE_HOST")
+    if raw:
+        return raw
+    return "127.0.0.1"
+
+
 def main() -> None:
+    host = _load_host()
     fixed_port = _load_fixed_port()
     if fixed_port is not None:
         port = fixed_port
     else:
-        port = _find_free_port(DEFAULT_PORT, PORT_SEARCH_RANGE)
+        port = _find_free_port(DEFAULT_PORT, PORT_SEARCH_RANGE, host)
 
     print("=" * 60)
     print("Gemini Dev Bridge (local server)")
     print(f"Root: {ROOT_DIR}")
     print(f"Port: {port}")
     print(f"Token: {TOKEN}")
-    print("URL: http://127.0.0.1:" + str(port))
+    if host == "0.0.0.0":
+        print("URL: http://127.0.0.1:" + str(port) + " (Dockerホスト側)")
+    else:
+        print("URL: http://" + host + ":" + str(port))
     print("※ トークンは拡張機能のオプション画面に貼り付けてください。")
     print("=" * 60)
     sys.stdout.flush()
@@ -580,7 +637,7 @@ def main() -> None:
     # 直接appオブジェクトを渡すことで、import経由の失敗を避ける
     uvicorn.run(
         app,
-        host="127.0.0.1",
+        host=host,
         port=port,
         log_level="info",
     )

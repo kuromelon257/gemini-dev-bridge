@@ -145,9 +145,16 @@ async function applyDiff(diffText) {
     body: JSON.stringify({ diff_text: diffText }),
   });
 
-  const data = await res.json().catch(() => ({ message: "応答の解析に失敗しました。" }));
+  const text = await res.text();
+  const data = (() => {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return { message: text };
+    }
+  })();
   if (!res.ok) {
-    throw new Error(data.message || "diff適用に失敗しました。");
+    throw new Error(data.message || data.detail || "diff適用に失敗しました。");
   }
   return data;
 }
